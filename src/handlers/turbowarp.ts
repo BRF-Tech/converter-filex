@@ -23,7 +23,7 @@ class turbowarpHandler implements FormatHandler {
       to: true,
       internal: "sb3",
       category: "archive",
-      lossless: true, // all project data is in the html 
+      lossless: true, // all project data is in the html
     },
     CommonFormats.HTML.builder("html")
       .allowTo()
@@ -45,22 +45,22 @@ class turbowarpHandler implements FormatHandler {
     for (const inputFile of inputFiles) {
       if (inputFormat.internal === "sb3") {
         const project = await downloadProject(inputFile.bytes);
-        
+
         const packager = new Packager();
         packager.project = project;
         packager.options.target = "html";
 
         const bytes = (await packager.package()).data;
 
-        outputFiles.push({ 
-          name: inputFile.name.replace(/\.sb3$/, ".html"), 
-          bytes 
+        outputFiles.push({
+          name: inputFile.name.replace(/\.sb3$/, ".html"),
+          bytes
         });
       } else if (inputFormat.internal === "html") {
-        const data = (await unpackager.default(inputFile.bytes)).data;
+        const data = (await unpackager(inputFile.bytes)).data;
         const bytes = new Uint8Array(data);
-        outputFiles.push({ 
-          name: inputFile.name.replace(/\.html$/, ".sb3"), 
+        outputFiles.push({
+          name: inputFile.name.replace(/\.html$/, ".sb3"),
           bytes
         });
       } else {
