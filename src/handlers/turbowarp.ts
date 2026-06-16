@@ -3,7 +3,6 @@
 import type { FileData, FileFormat, FormatHandler } from "../FormatHandler.ts";
 import CommonFormats from "src/CommonFormats.ts";
 import { Packager, largeAssets, downloadProject } from "turbowarp-packager-browser";
-import * as unpackager from "./turbowarp/unpackager/unpackager.js";
 
 // patching some assets
 largeAssets.scaffolding.src = "/convert/js/turbowarp-scaffolding/scaffolding-full.js";
@@ -32,7 +31,10 @@ class turbowarpHandler implements FormatHandler {
   ];
   public ready: boolean = false;
 
+  private unpackager?: any;
+
   async init () {
+    this.unpackager = await import("./turbowarp/unpackager/unpackager.js");
     this.ready = true;
   }
 
@@ -57,7 +59,7 @@ class turbowarpHandler implements FormatHandler {
           bytes
         });
       } else if (inputFormat.internal === "html") {
-        const data = (await unpackager(inputFile.bytes)).data;
+        const data = (await this.unpackager(inputFile.bytes)).data;
         const bytes = new Uint8Array(data);
         outputFiles.push({
           name: inputFile.name.replace(/\.html$/, ".sb3"),
