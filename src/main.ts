@@ -290,6 +290,26 @@ async function buildOptionList () {
 
 }
 
+/**
+ * Fast path for embed mode (filex): build allOptions + the traversion graph
+ * straight from the precached supported-format map WITHOUT calling
+ * handler.init() for every handler (slow, and can hang on WASM/puppeteer
+ * handlers). The specific handler(s) are initialised lazily during the
+ * actual conversion (attemptConvertPath calls handler.init() on demand).
+ */
+function buildOptionsFromCache () {
+  allOptions.length = 0;
+  for (const handler of handlers) {
+    const formats = window.supportedFormatCache.get(handler.name);
+    if (!formats) continue;
+    for (const format of formats) {
+      if (!format.mime) continue;
+      allOptions.push({ format, handler });
+    }
+  }
+  window.traversionGraph.init(window.supportedFormatCache, handlers);
+}
+
 (async () => {
   try {
     const cacheJSON = await fetch("cache.json").then(r => r.json());
@@ -300,8 +320,15 @@ async function buildOptionList () {
       "Consider saving the output of printSupportedFormatCache() to cache.json."
     );
   } finally {
-    await buildOptionList();
-    console.log("Built initial format list.");
+    const embed = new URLSearchParams(location.search).get("embed") === "1";
+    if (embed && window.supportedFormatCache.size > 0) {
+      buildOptionsFromCache();
+      console.log("Embed: built format list from cache (fast path).");
+    } else {
+      await buildOptionList();
+      console.log("Built initial format list.");
+    }
+    setupEmbedBridge();
   }
 })();
 
@@ -490,4 +517,66 @@ ui.convertButton.onclick = async function () {
   if (commitElement) {
     commitElement.textContent = import.meta.env.VITE_COMMIT_SHA ?? "unknown";
   }
+}
+
+/**
+ * filex embed bridge — active when loaded with `?embed=1` (e.g. inside a
+ * hidden iframe). Lets a parent window (filex) drive conversions over
+ * postMessage, headlessly, without using the convert UI.
+ *
+ * Parent → iframe : { target: "convert-embed", id, cmd, ... }
+ *   cmd "listFormats" → { source:"convert-embed", id, ok:true, formats:[{index,ext,format,mime,name,from,to,category}] }
+ *   cmd "convert" {name, bytes:ArrayBuffer, fromIndex, toIndex}
+ *                     → { source:"convert-embed", id, ok:true, name, ext, bytes:ArrayBuffer } | { ok:false, error }
+ * On load iframe posts { source:"convert-embed", event:"ready" }.
+ */
+function setupEmbedBridge () {
+  if (new URLSearchParams(location.search).get("embed") !== "1") return;
+
+  // Hidden / off-screen iframes get requestAnimationFrame heavily throttled
+  // (or it never fires), which stalls conversions — the converter awaits rAF
+  // between steps for UI repaints we don't need headlessly. Redirect rAF to a
+  // 0ms timeout (not throttled in a foreground tab's hidden iframe) so even a
+  // tiny doc converts instantly instead of hanging.
+  window.requestAnimationFrame = ((cb: FrameRequestCallback) =>
+    window.setTimeout(() => cb(performance.now()), 0)) as typeof window.requestAnimationFrame;
+
+  const post = (msg: Record<string, unknown>, transfer: Transferable[] = []) =>
+    window.parent.postMessage({ source: "convert-embed", ...msg }, "*", transfer);
+
+  window.addEventListener("message", async (ev: MessageEvent) => {
+    const data = ev.data;
+    if (!data || data.target !== "convert-embed") return;
+    const id = data.id;
+    try {
+      if (data.cmd === "listFormats") {
+        const formats = allOptions.map((o, index) => ({
+          index,
+          ext: o.format.extension,
+          format: o.format.format,
+          mime: o.format.mime,
+          name: o.format.name,
+          from: o.format.from,
+          to: o.format.to,
+          category: o.format.category ?? null
+        }));
+        post({ id, ok: true, formats });
+      } else if (data.cmd === "convert") {
+        const from = allOptions[data.fromIndex];
+        const to = allOptions[data.toIndex];
+        if (!from || !to) throw new Error("Invalid format index.");
+        const bytes = new Uint8Array(data.bytes as ArrayBuffer);
+        const output = await window.tryConvertByTraversing([{ name: data.name, bytes }], from, to);
+        if (!output) throw new Error("No conversion route found.");
+        const result = output.files[0];
+        const o = result.bytes;
+        const buf = o.buffer.slice(o.byteOffset, o.byteOffset + o.byteLength) as ArrayBuffer;
+        post({ id, ok: true, name: result.name, ext: to.format.extension, bytes: buf }, [buf]);
+      }
+    } catch (e) {
+      post({ id, ok: false, error: (e as Error)?.message ?? String(e) });
+    }
+  });
+
+  post({ event: "ready" });
 }
